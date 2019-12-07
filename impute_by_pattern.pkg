@@ -1,0 +1,10 @@
+v 1.0
+d 'IMPUTE_BY_PATTERN': Impute by pattern of missing values
+d 
+d Impute a variable taking pattern of missing values of the independent variables into account
+d 
+d Distribution-Date:   20191207
+d License: GNU General Public License v3.0
+d 
+F impute_by_pattern.ado
+f impute_by_pattern.sthlp
