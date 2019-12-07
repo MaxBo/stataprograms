@@ -1,0 +1,8 @@
+v 1.0
+d Materials by Max Bohnet
+d GGR Planung
+d bohnet@ggr-planung.de
+
+d 'impute_by_pattern': Impute a variable taking pattern of missing values of the independent variables into account
+
+p impute_by_pattern
