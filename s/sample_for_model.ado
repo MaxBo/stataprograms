@@ -16,7 +16,11 @@ di "`fullvlist'"
 capture drop if prediction_sample == 1
 dropvars sample prediction_sample rowid_prediction_sample
 dropvars `depvar'_*
-gen byte sample = 1
+gen byte sample = 1 `if' `in'
+
+foreach indepvar of varlist `vlist' {
+    replace sample = 0 if `indepvar' >= .
+}
 
 marksample touse
 local dummyvars = ""
@@ -36,7 +40,7 @@ local old_obs = _N
 local new_obs = `old_obs' + `ncombinations'
 set obs `new_obs'
 gen byte prediction_sample = (sample == .)
-replace sample = 1 if sample == .
+replace sample = 0 if sample == .
 gen rowid_prediction_sample = (_n - `old_obs') -1 if prediction_sample
 // generate casevar with negative values
 replace `casevar' = - floor(rowid_prediction_sample / `n_alternatives') - 1 if prediction_sample
@@ -54,6 +58,48 @@ mata: V[., .] = D
 
 local ncombinations = `n_alternatives'
 
+// identify alternatives which have more than one non-determinating variable
+
+matrix TOTALLY_DETERMINATED = J(`n_alternatives', 1, 0)
+foreach indepvar of varlist `vlist' {
+    tab `depvar' `indepvar' if `choicevar' == 1 & `touse', matcell(CELLS) matrow(ROWS) matcol(COLS)
+	local nrows = rowsof(CELLS)
+	local ncols = colsof(CELLS)
+
+	matrix DETERMINATED = J(`nrows', `ncols', 0)
+	///Loop over the categories and look for alternatives, that are categories, that totally determines an alternative
+	forvalues j = 1/`ncols' {
+		local several_alternatives = 0
+		local indepvalue = COLS[1, `j']
+		forvalues i = 1/`nrows' {
+			if CELLS[`i', `j'] > 0 {
+				local several_alternatives = `several_alternatives' + 1
+				local altnum = `i'
+			}
+		}
+		
+		if `several_alternatives' == 1 {
+			local vl : label (`depvar') `altnum'
+			matrix DETERMINATED[`altnum', `j'] = 1
+		}			
+	}
+
+	mata: DETERMINATED = st_matrix("DETERMINATED"); /*
+	    */CELLS = st_matrix("CELLS"); /*
+	    */TOTALLY_DETERMINATED = st_matrix("TOTALLY_DETERMINATED"); /*
+	    */POS_CELLS = (CELLS :> 0);/*
+	    */ALT_DET = rowsum(DETERMINATED);/*
+	    */ALT_DET2 = (rowsum(POS_CELLS) :<= 1);/*
+	    */TOTALLY = (( ALT_DET :* ALT_DET2)) :> 0;/*
+	    */TOTALLY_DETERMINATED = TOTALLY_DETERMINATED :| TOTALLY ;/*
+	    */st_matrix("ALT_DET", ALT_DET);/*
+	    */st_matrix("ALT_DET2", ALT_DET2);/*
+	    */st_matrix("TOTALLY_DETERMINATED", TOTALLY_DETERMINATED)
+}
+// exclude these alternatives, because they are totally determinated by one or several variables
+matrix list TOTALLY_DETERMINATED
+
+
 foreach indepvar of varlist `vlist' {
 	di "`indepvar'"
     tab `depvar' `indepvar' if `choicevar' == 1 & `touse', matcell(CELLS) matrow(ROWS) matcol(COLS)
@@ -62,6 +108,7 @@ foreach indepvar of varlist `vlist' {
 	matrix list ROWS
 	matrix list COLS
 
+	// make prediction sample
 	replace `indepvar' = mod(floor(rowid_prediction_sample / `ncombinations'), `ncols') + 1 if prediction_sample
 	local ncombinations = `ncombinations' * `ncols'
 	mkmat `indepvar' if prediction_sample == 1
@@ -75,8 +122,7 @@ foreach indepvar of varlist `vlist' {
 	mata: st_view(V=., ., "`indepvar'", "prediction_sample")
 	mata: V[., .] = D
 
-	
-	
+				
 	///Loop over the categories and look for categories, that totally determines an alternative
 	matrix DETERMINATED = J(`nrows', `ncols', 0)
 	forvalues j = 1/`ncols' {
@@ -95,19 +141,23 @@ foreach indepvar of varlist `vlist' {
 				}
 			}
 		}
-			
-		if `several_alternatives' == 1 {
+
+		if (`several_alternatives' == 1) {
 			local vl : label (`depvar') `altnum'
 			matrix DETERMINATED[`altnum', `j'] = 1
-			qui replace sample = 0 if `indepvar' == `indepvalue' & `depvar' != `altnum'
+			qui replace sample = 0 if `indepvar' == `indepvalue' // & `depvar' != `altnum'
 		}
 		forvalues i = 1/`nrows' {
+			if TOTALLY_DETERMINATED[`i', 1] == 1 {
+				qui replace sample = 0 if `indepvar' == `indepvalue' & `depvar' == `i'
+			}
+			
 			local depvalue = ROWS[`i', 1]
-			// check if the variable has a baselevel defined
+			// check if the variable has 'a baselevel defined
 			local has_base = strrpos("`fullvlist'", "`indepvalue'b.`indepvar'")
 			if CELLS[`i', `j'] > 0 {
 				local dummyvar `depvar'__`depvalue'__`indepvar'__`indepvalue'
-				if `i' != `baselevel' & DETERMINATED[`i', `j'] == 0 & `has_base' == 0 {
+				if `i' != `baselevel' & DETERMINATED[`i', `j'] == 0 & TOTALLY_DETERMINATED[`i', 1] == 0 & `has_base' == 0 {
 					qui gen byte `dummyvar' = (`depvar' == `depvalue') * (`indepvar' == `indepvalue')
 					local dummyvars `dummyvars' `dummyvar'
 				}
@@ -116,6 +166,7 @@ foreach indepvar of varlist `vlist' {
 				}
 			}
 			else if CELLS[`i', `j'] == 0 {
+				// no observations, so exclude from sample, don't add do constraintvars, so the coefficient will be -9999999
 			    qui replace sample = 0 if `indepvar' == `indepvalue' & `depvar' == `depvalue'
 			}
 		}
@@ -125,6 +176,31 @@ foreach indepvar of varlist `vlist' {
 	matrix list DETERMINATED
 	matrix list CELLS
 }
+
+
+qui corr `dummyvars' if ~prediction_sample & sample & choice
+matrix CORR = r(C)
+local newvarlist
+local nvars : word count `dummyvars'
+forval i = 1/`nvars' {
+    local keep = 1
+    forval j = 1/`=`i'-1' {
+        scalar corr_ij = CORR[`i',`j']
+        if abs(corr_ij) == 1 {
+            local keep = 0
+            continue, break
+        }
+    }
+	local var: word `i' of `dummyvars'
+    if `keep' {
+        local newvarlist `newvarlist' `var'
+    }
+	else {
+		di "`var' is correlated, so it is excluded from dummyvars and added to constraintvars"
+		local constraintvars `constraintvars' `var'
+	}
+}
+local dummyvars `newvarlist'
 
 return local dummyvars `"`dummyvars'"'
 return local constraintvars `"`constraintvars'"'
